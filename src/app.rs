@@ -4,14 +4,36 @@ use strum::IntoEnumIterator;
 use strum_macros::{EnumIter, ToString};
 use yew::format::Json;
 use yew::services::storage::{Area, StorageService};
+use yew::services::websocket::{WebSocketService, WebSocketStatus, WebSocketTask};
+use yew::services::fetch::{FetchService, FetchTask, Request, Response};
 use yew::prelude::*;
+use web_sys::TcpSocket;
+use anyhow::Error;
 
 const KEY: &str = "yew.todomvc.self";
+
+type AsBinary = bool;
+
+pub enum Format {
+    Json,
+    Toml,
+}
+
+pub enum WsAction {
+    Connect,
+    SendData(AsBinary),
+    Disconnect,
+    Lost,
+}
 
 pub struct App {
     link: ComponentLink<Self>,
     storage: StorageService,
     state: State,
+    fetch_service: FetchService,
+    ws_service: WebSocketService,
+    fetching: bool,
+    ws: Option<WebSocketTask>
 }
 
 #[derive(Serialize, Deserialize)]
@@ -41,6 +63,26 @@ pub enum Msg {
     Toggle(usize),
     ClearCompleted,
     Nope,
+    WsAction(WsAction),
+    WsReady(Result<WsResponse, Error>)
+}
+
+impl From<WsAction> for Msg {
+    fn from(action: WsAction) -> Self {
+        Msg::WsAction(action)
+    }
+}
+
+/// This type is used as a request which sent to websocket connection.
+#[derive(Serialize, Debug)]
+struct WsRequest {
+    value: u32,
+}
+
+/// This type is an expected response from a websocket connection.
+#[derive(Deserialize, Debug)]
+pub struct WsResponse {
+    value: u32,
 }
 
 impl Component for App {
@@ -62,7 +104,15 @@ impl Component for App {
             value: "".into(),
             edit_value: "".into(),
         };
-        App { link, storage, state }
+        App {
+            link,
+            storage,
+            state,
+            fetch_service: FetchService::new(),
+            ws_service: WebSocketService::new(),
+            fetching: false,
+            ws: None
+        }
     }
 
     fn update(&mut self, msg: Self::Message) -> ShouldRender {
@@ -108,8 +158,35 @@ impl Component for App {
             }
             Msg::ClearCompleted => {
                 self.state.clear_completed();
+            },
+            Msg::WsAction(action) => match action {
+                WsAction::Connect => {
+                    // let callback = self.link.callback(|Json(data)| Msg::WsReady(data));
+                    // let notification = self.link.callback(|status| match status {
+                    //     WebSocketStatus::Opened => Msg::Nope,
+                    //     WebSocketStatus::Closed | WebSocketStatus::Error => WsAction::Lost.into(),
+                    // });
+                    // let mut task = self
+                    //     .ws_service
+                    //     .connect_text("localhost:9997", callback, notification)
+                    //     .unwrap();
+                    // task.send(Ok("asdasdasd".to_string()));
+                    // self.ws = Some(task);
+                    match TcpSocket::new("127.0.0.1", 9995) {
+                        Ok(sock) => {
+                            info!("Great!");
+                            sock.send_with_str("hello world");
+                        },
+                        Err(e) => {
+                            info!("Oh noez {:?}", e);
+                        }
+                    }
+                }
+                _ => {
+                    self.ws = None;
+                }
             }
-            Msg::Nope => {}
+            _ => {}
         }
         self.storage.store(KEY, Json(&self.state.entries));
         true
@@ -123,6 +200,10 @@ impl Component for App {
                     <header class="header">
                         <h1>{ "todos" }</h1>
                         { self.view_input() }
+                        <button disabled=self.ws.is_some()
+                            onclick=self.link.callback(|_| Msg::WsAction(WsAction::Connect))>
+                        { "Connect To WebSocket" }
+                        </button>
                     </header>
                     <section class="main">
                         <input class="toggle-all" type="checkbox" checked=self.state.is_all_completed() onclick=self.link.callback(|_| Msg::ToggleAll) />
